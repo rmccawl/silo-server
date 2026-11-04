@@ -73,7 +73,7 @@ func (h *PlaybackHandler) compatScrobbleEvent(
 		upstreamSession.DisableProgressPersistence || playSession.ItemID == "" {
 		return watchsync.ScrobbleEvent{}, false
 	}
-	scrobbleCtx, cancel := compatDetachedContext(ctx)
+	scrobbleCtx, cancel := compatDetachedContext(ctx, compatSessionSyncTimeout)
 	defer cancel()
 
 	source := compatScrobbleSource(playSession, upstreamSession, preferredSource)
@@ -368,7 +368,11 @@ func (h *PlaybackHandler) dispatchCompatScrobbleEventConfirmed(
 	if h == nil || h.WatchScrobbler == nil {
 		return nil
 	}
-	scrobbleCtx, cancel := compatDetachedContext(ctx)
+	timeout := compatSessionSyncTimeout
+	if confirmStop {
+		timeout = compatConfirmedStopTimeout
+	}
+	scrobbleCtx, cancel := compatDetachedContext(ctx, timeout)
 	defer cancel()
 	var err error
 	switch action {

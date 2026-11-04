@@ -2069,7 +2069,16 @@ const (
 )
 
 const (
-	compatTerminalClaimLease           = 10 * time.Second
+	// compatConfirmedStopTimeout bounds one confirmed delivery of a staged
+	// stop: watch-sync's lookups and a provider plugin's write. A plugin keeps
+	// a few seconds of the deadline in reserve and starts no write it cannot
+	// finish, so a short deadline makes it defer every stop, and each retry
+	// gets the same deadline. This leaves room for a cold provider write.
+	compatConfirmedStopTimeout = 30 * time.Second
+	// compatTerminalClaimLease must outlast a confirmed delivery and its
+	// completion write, or another worker or the recovery scan could claim
+	// the same staged stop while the first delivery is still running.
+	compatTerminalClaimLease           = compatConfirmedStopTimeout + 15*time.Second
 	compatTerminalInitialRetryDelay    = 250 * time.Millisecond
 	compatTerminalMaxRetryDelay        = 30 * time.Second
 	defaultCompatTerminalFallbackDelay = 2 * time.Second
@@ -2348,13 +2357,13 @@ func (h *PlaybackHandler) deliverCompatTerminal(
 // tick instead of pinning request goroutines.
 const compatSessionSyncTimeout = 5 * time.Second
 
-func compatDetachedContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func compatDetachedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
 	} else {
 		ctx = context.WithoutCancel(ctx)
 	}
-	return context.WithTimeout(ctx, compatSessionSyncTimeout)
+	return context.WithTimeout(ctx, timeout)
 }
 
 // syncSessionsNow flushes the native-session snapshot to the shared admin

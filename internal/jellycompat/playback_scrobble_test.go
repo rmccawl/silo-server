@@ -1444,6 +1444,54 @@ func TestTerminalScrobbleRecoveryWaitsForConfirmedProviderStop(t *testing.T) {
 	}
 }
 
+// deadlineReservingCompatWatchScrobbler acts like a watch-provider plugin that
+// keeps a fixed reserve before the host deadline: it defers, without writing,
+// a stop whose remaining time cannot cover a cold provider write.
+type deadlineReservingCompatWatchScrobbler struct {
+	confirmingCompatWatchScrobbler
+	store      *PlaybackSessionStore
+	deadline   time.Time
+	remaining  time.Duration
+	claimUntil time.Time
+}
+
+func (s *deadlineReservingCompatWatchScrobbler) ScrobbleStopConfirmed(ctx context.Context, _ watchsync.ScrobbleEvent) error {
+	const pluginReserve, coldProviderWrite = 5 * time.Second, 15 * time.Second
+	s.deadline, _ = ctx.Deadline()
+	s.remaining = time.Until(s.deadline)
+	if pending, ok := s.store.GetFinalizable("play-1", "token-1"); ok {
+		s.claimUntil = pending.TerminalClaimUntil
+	}
+	if s.remaining-pluginReserve < coldProviderWrite {
+		return errors.New("provider time limit reached; the event will be retried")
+	}
+	return nil
+}
+
+func TestConfirmedTerminalStopLeavesProviderTimeToWrite(t *testing.T) {
+	store := NewPlaybackSessionStore(time.Hour, nil)
+	store.Put(PlaybackSession{ID: "play-1", CompatToken: "token-1"})
+	event := watchsync.ScrobbleEvent{PlaybackSessionID: "upstream-1"}
+	if _, err := store.StageTerminal("play-1", "token-1", event, true); err != nil {
+		t.Fatalf("stage terminal event: %v", err)
+	}
+	scrobbler := &deadlineReservingCompatWatchScrobbler{store: store}
+	handler := &PlaybackHandler{playbackStore: store, WatchScrobbler: scrobbler}
+
+	handler.deliverCompatTerminal(context.Background(), "play-1", "token-1", true, time.Time{}, 0, false)
+
+	if scrobbler.deadline.IsZero() {
+		t.Fatal("confirmed stop dispatched without a deadline")
+	}
+	if _, ok := store.GetFinalizable("play-1", "token-1"); ok {
+		t.Fatalf("provider deferred the confirmed stop: %s left before the deadline", scrobbler.remaining.Round(time.Millisecond))
+	}
+	if !scrobbler.claimUntil.After(scrobbler.deadline) {
+		t.Fatalf("terminal claim lease ends at %s, before the dispatch deadline %s",
+			scrobbler.claimUntil.Format(time.RFC3339Nano), scrobbler.deadline.Format(time.RFC3339Nano))
+	}
+}
+
 func TestTerminalScrobbleRecoveryRetainsEventWithoutConfirmationSupport(t *testing.T) {
 	store := NewPlaybackSessionStore(time.Hour, nil)
 	store.Put(PlaybackSession{ID: "play-1", CompatToken: "token-1"})
